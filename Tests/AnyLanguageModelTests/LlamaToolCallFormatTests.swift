@@ -4,6 +4,33 @@ import Testing
 @testable import AnyLanguageModel
 
 #if Llama
+    private struct LlamaNestedArgumentsTool: Tool {
+        let name = "find_weather"
+        let description = "Find weather for a location."
+
+        @Generable
+        enum Units {
+            case celsius
+            case fahrenheit
+        }
+
+        @Generable
+        struct Location {
+            var city: String
+            var units: Units
+        }
+
+        @Generable
+        struct Arguments {
+            var location: Location
+            var alternatives: [Location]
+        }
+
+        func call(arguments: Arguments) async throws -> String {
+            arguments.location.city
+        }
+    }
+
     private struct LlamaSchemaOptOutTool: Tool {
         let name = "innate_weather"
         let description = "Weather lookup known to the model."
@@ -55,8 +82,8 @@ import Testing
 
         // MARK: - System prompt rendering
 
-        @Test func hermesSystemMessageWrapsToolSpecs() {
-            let message = LlamaToolCallFormat.hermesJSON.systemMessage(
+        @Test func hermesSystemMessageWrapsToolSpecs() throws {
+            let message = try LlamaToolCallFormat.hermesJSON.systemMessage(
                 existingText: "You are helpful.",
                 tools: [weatherTool]
             )
@@ -66,8 +93,8 @@ import Testing
             #expect(message.contains("{\"name\": <function-name>, \"arguments\": <args-json-object>}"))
         }
 
-        @Test func qwenXMLSystemMessagePutsToolsFirst() {
-            let message = LlamaToolCallFormat.qwenXML.systemMessage(
+        @Test func qwenXMLSystemMessagePutsToolsFirst() throws {
+            let message = try LlamaToolCallFormat.qwenXML.systemMessage(
                 existingText: "You are helpful.",
                 tools: [weatherTool]
             )
@@ -76,8 +103,8 @@ import Testing
             #expect(message.contains("<function=example_function_name>"))
         }
 
-        @Test func gemmaSystemMessageAppendsDeclarations() {
-            let message = LlamaToolCallFormat.gemma.systemMessage(
+        @Test func gemmaSystemMessageAppendsDeclarations() throws {
+            let message = try LlamaToolCallFormat.gemma.systemMessage(
                 existingText: "You are helpful.",
                 tools: [weatherTool]
             )
@@ -89,8 +116,8 @@ import Testing
             #expect(message.contains("type:<|\"|>OBJECT<|\"|>"))
         }
 
-        @Test func emptyToolListLeavesSystemTextUntouched() {
-            let message = LlamaToolCallFormat.hermesJSON.systemMessage(existingText: "Hi.", tools: [])
+        @Test func emptyToolListLeavesSystemTextUntouched() throws {
+            let message = try LlamaToolCallFormat.hermesJSON.systemMessage(existingText: "Hi.", tools: [])
             #expect(message == "Hi.")
         }
 
@@ -109,7 +136,7 @@ import Testing
             }
             let context = try LlamaLanguageModel.LlamaToolPromptContext(format: format, tools: tools)
             #expect(context.definitions.map(\.name) == (includeAdvertisedTool ? ["getWeather"] : []))
-            let message = context.format.systemMessage(existingText: "Hi.", tools: context.definitions)
+            let message = try context.format.systemMessage(existingText: "Hi.", tools: context.definitions)
             #expect(!message.contains(optedOutTool.name))
             #expect(!message.contains(optedOutTool.description))
             if includeAdvertisedTool {
@@ -118,6 +145,156 @@ import Testing
             } else {
                 #expect(message == "Hi.")
             }
+        }
+
+        @Test func gemmaResolvesNestedGenerableToolArguments() throws {
+            let context = try LlamaLanguageModel.LlamaToolPromptContext(
+                format: .gemma,
+                tools: [LlamaNestedArgumentsTool()]
+            )
+            let message = try context.format.systemMessage(existingText: "", tools: context.definitions)
+            #expect(!message.contains("$ref"))
+            #expect(!message.contains("$defs"))
+            #expect(
+                message.contains(
+                    "location:{description:<|\"|>Generated Location<|\"|>,properties:{city:{type:<|\"|>STRING<|\"|>}"
+                )
+            )
+            #expect(
+                message.contains(
+                    "alternatives:{items:{additionalProperties:false,description:<|\"|>Generated Location<|\"|>,properties:{city:"
+                )
+            )
+            #expect(
+                message.contains(
+                    "units:{description:<|\"|>Generated Units<|\"|>,enum:[<|\"|>celsius<|\"|>,<|\"|>fahrenheit<|\"|>],type:<|\"|>STRING<|\"|>}"
+                )
+            )
+            #expect(message.components(separatedBy: "type:<|\"|>OBJECT<|\"|>").count == 4)
+        }
+
+        @Test func gemmaResolvesRootAndChainedEnumReferences() throws {
+            let tool = LlamaToolDefinition(
+                name: "f",
+                description: "",
+                parameters: [
+                    "$ref": "#/$defs/Arguments",
+                    "$defs": [
+                        "Arguments": [
+                            "type": "object",
+                            "properties": [
+                                "units": ["$ref": "#/$defs/Alias", "description": "Preferred units"],
+                                "choices": ["type": "array", "items": ["$ref": "#/$defs/Units~1~0"]],
+                                "groups": [
+                                    "type": "array",
+                                    "items": ["type": "array", "items": ["$ref": "#/$defs/Units~1~0"]],
+                                ],
+                            ],
+                        ],
+                        "Alias": ["$ref": "#/$defs/Units~1~0"],
+                        "Units/~": ["type": "string", "enum": ["celsius", "fahrenheit"]],
+                    ],
+                ]
+            )
+            let message = try LlamaToolCallFormat.gemma.systemMessage(existingText: "", tools: [tool])
+            let enumFields = "enum:[<|\"|>celsius<|\"|>,<|\"|>fahrenheit<|\"|>],type:<|\"|>STRING<|\"|>"
+            #expect(message.contains("units:{description:<|\"|>Preferred units<|\"|>,\(enumFields)}"))
+            #expect(message.contains("choices:{items:{\(enumFields)},type:<|\"|>ARRAY<|\"|>}"))
+            #expect(
+                message.contains("groups:{items:{items:{\(enumFields)},type:<|\"|>ARRAY<|\"|>},type:<|\"|>ARRAY<|\"|>}")
+            )
+            #expect(!message.contains("$ref"))
+        }
+
+        @Test func gemmaRejectsUnresolvedSchemaReferences() {
+            let tool = LlamaToolDefinition(name: "f", description: "", parameters: ["$ref": "#/$defs/Missing"])
+            #expect(throws: LlamaToolCallFormat.SchemaRenderingError.unresolvedReference("#/$defs/Missing")) {
+                try LlamaToolCallFormat.gemma.systemMessage(existingText: "", tools: [tool])
+            }
+        }
+
+        @Test func gemmaRejectsRecursiveSchemaReferences() {
+            let tool = LlamaToolDefinition(
+                name: "f",
+                description: "",
+                parameters: [
+                    "$ref": "#/$defs/Node",
+                    "$defs": [
+                        "Node": [
+                            "type": "object",
+                            "properties": ["children": ["type": "array", "items": ["$ref": "#/$defs/Node"]]],
+                        ]
+                    ],
+                ]
+            )
+            #expect(throws: LlamaToolCallFormat.SchemaRenderingError.recursiveReference("#/$defs/Node")) {
+                try LlamaToolCallFormat.gemma.systemMessage(existingText: "", tools: [tool])
+            }
+        }
+
+        enum SchemaPosition: CaseIterable {
+            case root, property, arrayItem
+
+            func wrap(_ schema: DynamicGenerationSchema) -> DynamicGenerationSchema {
+                switch self {
+                case .root:
+                    return schema
+                case .property:
+                    return DynamicGenerationSchema(
+                        name: "Arguments",
+                        properties: [.init(name: "value", schema: schema)]
+                    )
+                case .arrayItem:
+                    return DynamicGenerationSchema(
+                        name: "Arguments",
+                        properties: [.init(name: "values", schema: .init(arrayOf: schema))]
+                    )
+                }
+            }
+
+            func wrap(_ schema: [String: Any]) -> [String: Any] {
+                switch self {
+                case .root: return schema
+                case .property: return ["type": "object", "properties": ["value": schema]]
+                case .arrayItem:
+                    return ["type": "object", "properties": ["values": ["type": "array", "items": schema]]]
+                }
+            }
+        }
+
+        @Test(arguments: SchemaPosition.allCases)
+        func gemmaRejectsReferencedDynamicUnions(position: SchemaPosition) throws {
+            let choice = DynamicGenerationSchema(
+                name: "Choice",
+                anyOf: [.init(type: String.self), .init(type: Int.self)]
+            )
+            let schema = try GenerationSchema(root: position.wrap(choice), dependencies: [])
+            let data = try JSONEncoder().encode(schema)
+            let parameters = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+            let tool = LlamaToolDefinition(name: "f", description: "", parameters: parameters)
+            #expect(throws: LlamaToolCallFormat.SchemaRenderingError.unsupportedComposition("anyOf")) {
+                try LlamaToolCallFormat.gemma.systemMessage(existingText: "", tools: [tool])
+            }
+        }
+
+        @Test(arguments: SchemaPosition.allCases, ["anyOf", "oneOf", "allOf"])
+        func gemmaRejectsInlineSchemaCompositions(position: SchemaPosition, keyword: String) {
+            let parameters = position.wrap([keyword: [["type": "string"], ["type": "integer"]]])
+            let tool = LlamaToolDefinition(name: "f", description: "", parameters: parameters)
+            #expect(throws: LlamaToolCallFormat.SchemaRenderingError.unsupportedComposition(keyword)) {
+                try LlamaToolCallFormat.gemma.systemMessage(existingText: "", tools: [tool])
+            }
+        }
+
+        @Test(arguments: [LlamaToolCallFormat.hermesJSON, .qwenXML])
+        func otherFormatsPreserveUnionSchemas(format: LlamaToolCallFormat) throws {
+            let tool = LlamaToolDefinition(
+                name: "f",
+                description: "",
+                parameters: ["anyOf": [["type": "string"], ["type": "integer"]]]
+            )
+            let message = try format.systemMessage(existingText: "", tools: [tool])
+            #expect(message.contains("\"anyOf\":[{\"type\":\"string\"},{\"type\":\"integer\"}]"))
         }
 
         // MARK: - Hermes JSON parsing
@@ -345,6 +522,21 @@ import Testing
         // MARK: - Streaming visibility
 
         @Test(
+            arguments: LlamaToolCallFormat.gemmaChannelOpenMarkers,
+            ["\n  Hello.\n", "  \t\n", " Hi <"]
+        )
+        func gemmaCompletedResponsePreservesWhitespace(channelMarker: String, answer: String) {
+            let raw = " \n" + channelMarker + "thought\nplan\n<channel|>" + answer
+            let visible = LlamaToolCallFormat.gemma.streamingVisibleText(
+                in: raw,
+                withholdToolCalls: false,
+                holdPartialMarkers: false
+            )
+            #expect(visible == " \n" + answer)
+            #expect(visible == LlamaToolCallFormat.gemma.parseToolCalls(in: raw).visibleText)
+        }
+
+        @Test(
             arguments: [LlamaToolCallFormat.hermesJSON, .qwenXML, .gemma],
             [" ", "\n", "\n\n", "\t"]
         )
@@ -439,16 +631,20 @@ import Testing
         @Test func hermesToolResponseIsAUserTurn() {
             let message = LlamaToolCallFormat.hermesJSON.toolResponseMessage(
                 toolName: "get_weather",
-                content: "{\"temperature\": 21}"
+                segments: [.text(.init(content: "{\"temperature\": 21}"))]
             )
             #expect(message.role == "user")
             #expect(message.content == "<tool_response>\n{\"temperature\": 21}\n</tool_response>")
         }
 
-        @Test func gemmaToolResponseContinuesTheModelTurn() {
+        @Test func gemmaToolResponseContinuesTheModelTurn() throws {
             let message = LlamaToolCallFormat.gemma.toolResponseMessage(
                 toolName: "get_weather",
-                content: "{\"temperature\": 21}"
+                segments: [
+                    .structure(
+                        .init(source: "get_weather", content: try GeneratedContent(json: "{\"temperature\":21}"))
+                    )
+                ]
             )
             #expect(message.role == "tool")
             #expect(
@@ -458,8 +654,68 @@ import Testing
         }
 
         @Test func gemmaScalarToolResponseWrapsInValue() {
-            let message = LlamaToolCallFormat.gemma.toolResponseMessage(toolName: "f", content: "done")
+            let message = LlamaToolCallFormat.gemma.toolResponseMessage(
+                toolName: "f",
+                segments: [.text(.init(content: "done"))]
+            )
             #expect(message.content == "<|tool_response>response:f{value:<|\"|>done<|\"|>}<tool_response|>")
+        }
+
+        @Test(arguments: [
+            ("[\"a\"]", "{value:[<|\"|>a<|\"|>]}"),
+            ("3", "{value:3}"),
+            ("1.5", "{value:1.5}"),
+            ("true", "{value:true}"),
+            ("false", "{value:false}"),
+            ("null", "{value:null}"),
+            ("\"done\"", "{value:<|\"|>done<|\"|>}"),
+            ("[]", "{value:[]}"),
+            ("{}", "{}"),
+            ("{\"items\":[3,true,null]}", "{items:[3,true,null]}"),
+        ])
+        func gemmaStructuredToolResponsePreservesType(testCase: (String, String)) throws {
+            let (json, body) = testCase
+            let message = LlamaToolCallFormat.gemma.toolResponseMessage(
+                toolName: "f",
+                segments: [.structure(.init(source: "f", content: try GeneratedContent(json: json)))]
+            )
+            #expect(message.content == "<|tool_response>response:f\(body)<tool_response|>")
+        }
+
+        @Test(arguments: ["[\"a\"]", "3", "true", "null", "{\"items\":[3]}", "\"done\""])
+        func gemmaTextToolResponseStaysText(text: String) {
+            let message = LlamaToolCallFormat.gemma.toolResponseMessage(
+                toolName: "f",
+                segments: [.text(.init(content: text))]
+            )
+            #expect(message.content == "<|tool_response>response:f{value:<|\"|>\(text)<|\"|>}<tool_response|>")
+        }
+
+        @Test func gemmaMixedToolResponsePreservesSegmentTypesAndOrder() throws {
+            let message = LlamaToolCallFormat.gemma.toolResponseMessage(
+                toolName: "f",
+                segments: [
+                    .text(.init(content: "Count:")),
+                    .structure(.init(source: "f", content: GeneratedContent(3))),
+                    .structure(.init(source: "f", content: try GeneratedContent(json: "[true]"))),
+                ]
+            )
+            #expect(
+                message.content == "<|tool_response>response:f{value:[<|\"|>Count:<|\"|>,3,[true]]}<tool_response|>"
+            )
+        }
+
+        @Test(arguments: [LlamaToolCallFormat.hermesJSON, .qwenXML])
+        func textToolResponseFormatsStillJoinSegments(format: LlamaToolCallFormat) {
+            let message = format.toolResponseMessage(
+                toolName: "f",
+                segments: [
+                    .text(.init(content: "Count:")),
+                    .structure(.init(source: "f", content: GeneratedContent(3))),
+                ]
+            )
+            #expect(message.role == "user")
+            #expect(message.content == "<tool_response>\nCount:\n3\n</tool_response>")
         }
     }
 
