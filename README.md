@@ -73,6 +73,8 @@ session.toolExecutionDelegate = ToolExecutionObserver()
 - [x] [Core ML](https://developer.apple.com/documentation/coreml) models
 - [x] [MLX](https://github.com/ml-explore/mlx-swift) models
 - [x] [llama.cpp](https://github.com/ggml-org/llama.cpp) (GGUF models)
+- [x] [LiteRT-LM](https://github.com/google-ai-edge/litert-lm)
+  (`.litertlm` models, using the official Swift package)
 - [x] Ollama [HTTP API](https://github.com/ollama/ollama/blob/main/docs/api.md)
 - [x] Anthropic [Messages API](https://docs.claude.com/en/api/messages)
 - [x] Google [Gemini API](https://ai.google.dev/api/generate-content)
@@ -117,6 +119,9 @@ This results in smaller binary sizes and faster build times.
   (depends on `ml-explore/mlx-swift-lm`)
 - `Llama`: Enables llama.cpp support
   (requires `mattt/llama.swift`)
+- `LiteRT`: Enables LiteRT-LM support for Gemma 4 and other `.litertlm` models
+  (requires the official `google-ai-edge/LiteRT-LM` Swift package;
+  iOS and macOS only)
 
 By default, no traits are enabled.
 To enable specific traits, specify them in your package's dependencies:
@@ -366,13 +371,14 @@ Image support varies by provider:
 | Core ML                 | —               |
 | MLX                     | model-dependent |
 | llama.cpp               | —               |
+| LiteRT-LM               | model-dependent |
 | Ollama                  | model-dependent |
 | OpenAI                  | yes             |
 | Open Responses          | yes             |
 | Anthropic               | yes             |
 | Google Gemini           | yes             |
 
-For MLX and Ollama,
+For MLX, LiteRT-LM, and Ollama,
 use a vision-capable model 
 (for example, a VLM or `-vl` variant).
 
@@ -609,6 +615,39 @@ let response = try await session.respond(
     options: options
 )
 ```
+
+### LiteRT-LM
+
+Runs `.litertlm` models (for example, Gemma 4) fully on-device
+via Google's [LiteRT-LM](https://github.com/google-ai-edge/litert-lm) runtime
+with Metal GPU acceleration
+(requires `LiteRT` trait;
+iOS and macOS only):
+
+```swift
+let model = LiteRTLanguageModel(modelFileURL: modelURL)
+
+let session = LanguageModelSession(model: model)
+let response = try await session.respond(to: "What is the capital of France?")
+```
+
+You can also load a `.litertlm` file from Hugging Face.
+The file is downloaded on first use
+using the Hub client's cache and authentication:
+
+```swift
+// Any Hugging Face repo
+let model = LiteRTLanguageModel(
+    huggingFaceRepo: "litert-community/gemma-4-E4B-it-litert-lm",
+    fileName: "gemma-4-E4B-it.litertlm")
+```
+
+Image inputs are supported for models that ship a vision tower
+(pass `visionBackend: .cpu()`).
+Structured generation is prompt-driven —
+the JSON schema is included in the prompt and the response is parsed.
+Tool calling is supported for `respond`
+(not yet for streaming).
 
 ### Ollama
 

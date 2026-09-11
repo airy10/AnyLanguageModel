@@ -25,6 +25,7 @@ let package = Package(
         .trait(name: "CoreML"),
         .trait(name: "MLX"),
         .trait(name: "Llama"),
+        .trait(name: "LiteRT"),
         .trait(name: "AsyncHTTPClient"),
         .default(enabledTraits: []),
     ],
@@ -43,6 +44,7 @@ let package = Package(
         .package(url: "https://github.com/mattt/llama.swift", .upToNextMajor(from: "2.10549.0")),
         .package(url: "https://github.com/mattt/PartialJSONDecoder", from: "1.0.0"),
         .package(url: "https://github.com/ml-explore/mlx-swift-lm", from: "3.31.4"),
+        .package(url: "https://github.com/google-ai-edge/LiteRT-LM", from: "0.17.0"),
         .package(url: "https://github.com/swiftlang/swift-syntax", from: "602.0.0"),
         .package(url: "https://github.com/swift-server/async-http-client.git", from: "1.24.0"),
     ],
@@ -77,7 +79,7 @@ let package = Package(
                 .product(
                     name: "HuggingFace",
                     package: "swift-huggingface",
-                    condition: .when(traits: ["MLX"])
+                    condition: .when(traits: ["MLX", "LiteRT"])
                 ),
                 .product(
                     name: "Tokenizers",
@@ -93,6 +95,11 @@ let package = Package(
                     name: "LlamaSwift",
                     package: "llama.swift",
                     condition: .when(traits: ["Llama"])
+                ),
+                .product(
+                    name: "LiteRTLM",
+                    package: "LiteRT-LM",
+                    condition: .when(platforms: [.iOS, .macOS], traits: ["LiteRT"])
                 ),
                 .product(
                     name: "AsyncHTTPClient",
