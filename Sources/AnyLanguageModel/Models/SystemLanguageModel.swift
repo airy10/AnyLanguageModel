@@ -648,7 +648,7 @@
 
         case .integer(_, _, _, _, _, _, minimum: let minimum, maximum: let maximum, _, _, _):
             if let enumValues = jsonSchema.enum {
-                let enumsSchema = enumValues.compactMap { convertConstToSchema($0) }
+                let enumsSchema = enumValues.compactMap { convertConstToSchema(JSONValue($0)) }
                 return .init(name: name ?? "", anyOf: enumsSchema)
             }
 
@@ -666,7 +666,7 @@
 
         case .number(_, _, _, _, _, _, minimum: let minimum, maximum: let maximum, _, _, _):
             if let enumValues = jsonSchema.enum {
-                let enumsSchema = enumValues.compactMap { convertConstToSchema($0) }
+                let enumsSchema = enumValues.compactMap { convertConstToSchema(JSONValue($0)) }
                 return .init(name: name ?? "", anyOf: enumsSchema)
             }
 
