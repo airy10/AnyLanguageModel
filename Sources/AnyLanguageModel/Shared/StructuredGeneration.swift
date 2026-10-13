@@ -502,6 +502,8 @@ struct ConstrainedJSONGenerator<Backend: TokenBackend> {
     ///
     /// With several variants, the mask offers the keys of every variant still in play, and
     /// each emitted key keeps only the variants that declare it.
+    /// When the variants are the cases of an enumeration with associated values,
+    /// the object starts with the case's `type`, whose value chooses the case.
     ///
     /// - Returns: The object, and the positions in `variants` of the variants it still matches.
     private mutating func generateObject(
@@ -520,6 +522,14 @@ struct ConstrainedJSONGenerator<Backend: TokenBackend> {
         var live = Array(variants.indices)
         var emittedKeys = Set<String>()
         var output = try await emit("{")
+
+        // Like Foundation Models, the object of an enumeration case starts with its `type`,
+        // whose value chooses the case. Other unions follow the keys the model writes.
+        if variants.count > 1, let key = try caseTypeKey(of: variants) {
+            output += try await emit("\"\(key)\":")
+            emittedKeys.insert(key)
+            output += try await generateValue(forKey: key, of: variants, narrowing: &live)
+        }
 
         while true {
             let liveVariants = live.map { variants[$0] }
@@ -728,6 +738,24 @@ struct ConstrainedJSONGenerator<Backend: TokenBackend> {
         case .boolean, .null:
             return node
         }
+    }
+
+    /// The key that names the case, if every variant is the object of a different case
+    /// of an enumeration with associated values.
+    ///
+    /// That's a required `type` with a different single string choice in each variant,
+    /// as `GenerationSchema(type:description:cases:)` writes it.
+    private func caseTypeKey(of variants: [GenerationSchema.ObjectNode]) throws -> String? {
+        let key = GenerationSchema.caseTypeProperty
+        var names = Set<String>()
+        for variant in variants {
+            guard variant.required.contains(key),
+                let node = variant.properties[key],
+                let choices = try stringChoices(of: node), choices.count == 1,
+                names.insert(choices[0]).inserted
+            else { return nil }
+        }
+        return key
     }
 
     /// The choices of a string enum without a pattern, through references.
